@@ -1,30 +1,7 @@
-// Copyright 2024 Espressif Systems (Shanghai) PTE LTD
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-/**
- * @brief This example demonstrates Zigbee temperature and humidity sensor Sleepy device.
- *
- * The example demonstrates how to use Zigbee library to create an end device temperature and humidity sensor.
- * The sensor is a Zigbee end device, which is reporting data to the Zigbee network.
- *
- * Proper Zigbee mode must be selected in Tools->Zigbee mode
- * and also the correct partition scheme must be selected in Tools->Partition Scheme.
- *
- * Please check the README.md for instructions and more detailed description.
- *
- * Created by Jan Procházka (https://github.com/P-R-O-C-H-Y/)
- */
+// This is firmaware for Seed Studio Xiao Soil Mosture Sensor based on ESP32C6 communicating via Zigbee in End Device mode. 
+// The device measures soil moisture and reports it to the coordinator, then goes to deep sleep to save battery. 
+// When the device is plugged in, it reports more frequently and indicates the moisture level by LED. 
+// The device can be woken up by a button press, which can be used for factory reset if the button is pressed for more than 10 seconds.
 
 #include <Arduino.h>
 
@@ -36,7 +13,6 @@
 
 #define USE_LED_ON_BATTERY 0 // when 1 LED blink shortly when reporting
 
-/* Zigbee temperature + humidity sensor configuration */
 #define ENDPOINT_NUMBER 1
 
 #define BUTTON_PIN_BITMASK(GPIO) (1ULL << GPIO)  // 2 ^ GPIO_NUMBER in hex
