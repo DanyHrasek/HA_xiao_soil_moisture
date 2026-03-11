@@ -34,8 +34,6 @@
 
 #include "Zigbee.h"
 
-#define USE_GLOBAL_ON_RESPONSE_CALLBACK 0  // Set to 0 to use local callback specified directly for the endpoint.
-
 #define USE_LED_ON_BATTERY 0 // when 1 LED blink shortly when reporting
 
 /* Zigbee temperature + humidity sensor configuration */
@@ -47,12 +45,12 @@
 #define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP_SHORT  900         /* Sleep for 15min */
 #define TIME_TO_SLEEP_LONG  21500     /* Sleep for 6h (after 6h ZHA set device as unavailable) */
-#define TIME_TO_SLEEP_TRESHOLD 45 // moisture percentage below witch is period of reporting more frequent
+#define TIME_TO_SLEEP_TRESHOLD 45 /* moisture percentage below witch is period of reporting more frequent */
 #define REPORT_TIMEOUT 1000       /* Timeout for response from coordinator in ms */
 
-#define WET_VOLTAGE 1600
-#define DRY_VOLTAGE 2750
-#define BATTERY_FACTOR 2 // how much battery charge 
+#define WET_VOLTAGE 1600 // voltage at full water saturation
+#define DRY_VOLTAGE 2550 // voltage at dry soil
+#define BATTERY_FACTOR 0 // how much battery charge affects the voltage measurement in water, 0 means no effect
 
 const uint8_t buttonPin = 2;
 const uint8_t pwmPin = 21;
@@ -63,34 +61,6 @@ const uint8_t ledGreenPin = 19;
 const uint8_t ledYellowPin = 18;
 
 ZigbeeAnalog zbMoisture = ZigbeeAnalog(ENDPOINT_NUMBER);
-
-uint8_t dataToSend = 1;  // Temperature and humidity values are reported in same endpoint, so 2 values are reported
-bool resend = false;
-
-/************************ Callbacks *****************************/
-#if USE_GLOBAL_ON_RESPONSE_CALLBACK
-void onGlobalResponse(zb_cmd_type_t command, esp_zb_zcl_status_t status, uint8_t endpoint, uint16_t cluster) {
-  //Serial.printf("Global response command: %d, status: %s, endpoint: %d, cluster: 0x%04x\r\n", command, esp_zb_zcl_status_to_name(status), endpoint, cluster);
-  if ((command == ZB_CMD_REPORT_ATTRIBUTE) && (endpoint == ENDPOINT_NUMBER)) {
-    switch (status) {
-      case ESP_ZB_ZCL_STATUS_SUCCESS: dataToSend--; break;
-      case ESP_ZB_ZCL_STATUS_FAIL:    resend = true; break;
-      default:                        break;  // add more statuses like ESP_ZB_ZCL_STATUS_INVALID_VALUE, ESP_ZB_ZCL_STATUS_TIMEOUT etc.
-    }
-  }
-}
-#else
-void onResponse(zb_cmd_type_t command, esp_zb_zcl_status_t status) {
-  //Serial.printf("Response command: %d, status: %s\r\n", command, esp_zb_zcl_status_to_name(status));
-  if (command == ZB_CMD_REPORT_ATTRIBUTE) {
-    switch (status) {
-      case ESP_ZB_ZCL_STATUS_SUCCESS: dataToSend--; break;
-      case ESP_ZB_ZCL_STATUS_FAIL:    resend = true; break;
-      default:                        break;  // add more statuses like ESP_ZB_ZCL_STATUS_INVALID_VALUE, ESP_ZB_ZCL_STATUS_TIMEOUT etc.
-    }
-  }
-}
-#endif
 
 uint8_t measureBatteryVoltage(){
   uint8_t voltage = analogRead(batteryPin)/100;
@@ -108,27 +78,26 @@ uint8_t measureBatteryPercentage(){
   }
   return percentage;
 }
-/************************ Temp sensor *****************************/
+/************************ function called when on battery *****************************/
 static void measureAndSleep(void *arg) {
   // Measure temperature sensor value
   uint moisture = 0;
   bool sent;
 
+  // measure moisture 5 times and calculate average to get more stable value
   for(uint8_t m = 0; m<5; m++){
     moisture = moisture + ( ( DRY_VOLTAGE - analogRead(sensorPin) )*100 / ( DRY_VOLTAGE - (WET_VOLTAGE - BATTERY_FACTOR*(100-measureBatteryPercentage()) ) ) );  //s nízkou baterkou napětí ve vodě klesne až na 1350
   }
   moisture = moisture /5;
   analogWrite(pwmPin, 0);
 
-  // Update temperature and humidity values in Temperature sensor EP
   zbMoisture.setAnalogInput(moisture);
 
   zbMoisture.setBatteryVoltage(measureBatteryVoltage());
   zbMoisture.setBatteryPercentage(measureBatteryPercentage());
   zbMoisture.reportBatteryPercentage();
 
-  // Report temperature and humidity values
-  sent = zbMoisture.reportAnalogInput();  // reports temperature and humidity values (if humidity sensor is not added, only temperature is reported)
+  sent = zbMoisture.reportAnalogInput();  // report moisture as percentage value
 
 #if USE_LED_ON_BATTERY
   if(moisture > 50) digitalWrite(ledGreenPin, 1);
@@ -141,7 +110,7 @@ static void measureAndSleep(void *arg) {
     sent = zbMoisture.reportAnalogInput();
     tryies--;
   }
-  vTaskDelay(500 / portTICK_PERIOD_MS);
+  vTaskDelay(500 / portTICK_PERIOD_MS); // wait for a while to let the data be sent before going to sleep, otherwise the device may go to sleep before sending the data and the data will be lost
 
 #if USE_LED_ON_BATTERY
   digitalWrite(ledRedPin, 0);
@@ -149,37 +118,36 @@ static void measureAndSleep(void *arg) {
   digitalWrite(ledYellowPin, 0);
 #endif
   
-  // Put device to deep sleep after data was sent successfully or timeout
+  // Put device to deep sleep based on moisture level, if the moisture is below the threshold, the device will sleep for shorter time to report more frequently, otherwise it will sleep for longer time to save battery
   if(moisture < TIME_TO_SLEEP_TRESHOLD) esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP_SHORT * uS_TO_S_FACTOR);
   else esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP_LONG * uS_TO_S_FACTOR);
   esp_deep_sleep_start();
 }
 
+/************************ function called when plugged in *****************************/
 static void measure(void *arg) {
-  // Measure temperature sensor value
   while(true){
     uint moisture = 0;
 
     for(uint8_t m = 0; m<5; m++){
-      moisture = moisture + ( ( DRY_VOLTAGE - analogRead(sensorPin) )*100 / ( DRY_VOLTAGE - WET_VOLTAGE ) );  //s nízkou baterkou napětí ve vodě klesne až na 1350
+      moisture = moisture + ( ( DRY_VOLTAGE - analogRead(sensorPin) )*100 / ( DRY_VOLTAGE - WET_VOLTAGE ) );
     }
     moisture = moisture /5;
 
-    // Update temperature and humidity values in Temperature sensor EP
     zbMoisture.setAnalogInput(moisture);
     
+    // indicate moisture level by LED when plugged in (all the time on, not only when reporting)
     digitalWrite(ledRedPin, 0);
     digitalWrite(ledGreenPin, 0);
     digitalWrite(ledYellowPin, 0);
 
     if(moisture > 50) digitalWrite(ledGreenPin, 1);
     else if(moisture > 40) digitalWrite(ledYellowPin, 1);
-    else digitalWrite(ledRedPin, 1);
+    else digitalWrite(ledRedPin, 1); 
 
-    // Report temperature and humidity values
-    zbMoisture.reportAnalogInput();  // reports temperature and humidity values (if humidity sensor is not added, only temperature is reported)
+    zbMoisture.reportAnalogInput();
 
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
+    vTaskDelay(5000 / portTICK_PERIOD_MS); // wait for 5s before measuring again, the reporting interval is not critical when the device is plugged in, so we can afford to report more frequently to get more accurate data
   }
 }
 
@@ -197,17 +165,16 @@ void setup() {
   // Init button switch
   pinMode(buttonPin, INPUT);
 
-  // Optional: set Zigbee device name and model
-  zbMoisture.setManufacturerAndModel("Espressif", "Soil Moisture Sensor");
-  // Set default (initial) value for the temperature sensor to 10.0°C to match the minimum temperature measurement value (default value is 0.0°C)
+  // Optional: set Zigbee device name and model + add cluster for moisture sensor
+  zbMoisture.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
   zbMoisture.addAnalogInput();
   zbMoisture.setAnalogInputApplication(ESP_ZB_ZCL_AI_PERCENTAGE_OTHER);
   zbMoisture.setAnalogInputDescription("Soil Moisture");
   zbMoisture.setAnalogInputResolution(1);
 
-  // Set power source to battery, battery percentage and battery voltage (now 100% and 3.5V for demonstration)
-  // The value can be also updated by calling zbTempSensor.setBatteryPercentage(percentage) or zbTempSensor.setBatteryVoltage(voltage) anytime after Zigbee.begin()
-  zbMoisture.setPowerSource(ZB_POWER_SOURCE_BATTERY, measureBatteryPercentage(), measureBatteryVoltage());
+  // Set power source to battery, battery percentage and battery voltage
+  if(measureBatteryVoltage() > 1) zbMoisture.setPowerSource(ZB_POWER_SOURCE_BATTERY, measureBatteryPercentage(), measureBatteryVoltage());
+  else zbMoisture.setPowerSource(ZB_POWER_SOURCE_MAINS);
 
   // Add endpoint to Zigbee Core
   Zigbee.addEndpoint(&zbMoisture);
@@ -232,14 +199,14 @@ void setup() {
     delay(500);
     digitalWrite(ledRedPin, 1);
     delay(500);
-    ESP.restart();  // If Zigbee failed to start, reboot the device and try again
+    digitalWrite(ledRedPin, 0);
+    ESP.restart();  // If Zigbee failed to start, reboot the device and try again after couple blinks of red LED to indicate the error
   }
   while (!Zigbee.connected()) {
     delay(100);
   }
 
-  // Start Temperature sensor reading task
-
+  // setup wakeup button for battery powered device and start measurement task according to power source
   if(measureBatteryVoltage() > 1){
     esp_sleep_enable_ext1_wakeup_io(BUTTON_PIN_BITMASK(WAKEUP_GPIO), ESP_EXT1_WAKEUP_ANY_LOW);
     // Configure pullup/downs via RTCIO to tie wakeup pins to inactive level during deepsleep.
@@ -265,7 +232,7 @@ void loop() {
         // If key pressed for more than 10secs, factory reset Zigbee and reboot
         delay(1000);
         // Optional set reset in factoryReset to false, to not restart device after erasing nvram, but set it to endless sleep manually instead
-        Zigbee.factoryReset(false);
+        //Zigbee.factoryReset(false);
         esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
         esp_deep_sleep_start();
       }
