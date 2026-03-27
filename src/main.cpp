@@ -10,7 +10,6 @@
 #endif
 
 #include "Zigbee.h"
-#include <Adafruit_NeoPixel.h>
 
 #define USE_LED_ON_BATTERY 0 // when 1 LED blink shortly when reporting
 
@@ -29,8 +28,6 @@
 #define DRY_VOLTAGE 2550 // voltage at dry soil
 #define BATTERY_FACTOR 0 // how much battery charge affects the voltage measurement in water, 0 means no effect
 
-#define PIXELS_NUM 33
-
 const uint8_t buttonPin = 2;
 const uint8_t pwmPin = 21;
 const uint8_t sensorPin = 1;
@@ -38,12 +35,8 @@ const uint8_t batteryPin = 0;
 const uint8_t ledRedPin = 20;
 const uint8_t ledGreenPin = 19;
 const uint8_t ledYellowPin = 18;
-const uint8_t neopixelPin = 17; //D7
 
 ZigbeeAnalog zbMoisture = ZigbeeAnalog(ENDPOINT_NUMBER);
-ZigbeeColorDimmableLight zbColorLight = ZigbeeColorDimmableLight(ENDPOINT_NUMBER+1);
-
-Adafruit_NeoPixel pixels = Adafruit_NeoPixel(PIXELS_NUM, neopixelPin, NEO_GRB + NEO_KHZ800);
 
 uint8_t measureBatteryVoltage(){
   uint8_t voltage = analogRead(batteryPin)/100;
@@ -134,19 +127,6 @@ static void measure(void *arg) {
   }
 }
 
-void setNeopixels() {
-  for(uint8_t i=0; i<PIXELS_NUM; i++){
-    if(zbColorLight.getLightState()) {
-      pixels.setPixelColor(i, pixels.Color(zbColorLight.getLightRed(), zbColorLight.getLightGreen(), zbColorLight.getLightBlue()));
-    } else {
-      pixels.setPixelColor(i, pixels.Color(0, 0, 0));
-    }
-    delay(100);
-  }
-  pixels.setBrightness(zbColorLight.getLightLevel());
-  pixels.show();
-}
-
 /********************* Arduino functions **************************/
 void setup() {
   
@@ -161,18 +141,12 @@ void setup() {
   // Init button switch
   pinMode(buttonPin, INPUT);
 
-  pixels.begin();
-  pixels.show(); // Initialize all pixels to 'off'
-
-  // set Zigbee device name and model + add cluster for moisture sensor
+  // Optional: set Zigbee device name and model + add cluster for moisture sensor
   zbMoisture.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
   zbMoisture.addAnalogInput();
   zbMoisture.setAnalogInputApplication(ESP_ZB_ZCL_AI_PERCENTAGE_OTHER);
   zbMoisture.setAnalogInputDescription("Soil Moisture");
   zbMoisture.setAnalogInputResolution(1);
-
-  zbColorLight.setLightColorCapabilities(ZIGBEE_COLOR_CAPABILITY_X_Y);
-  zbColorLight.onLightChangeRgb(setNeopixels);
 
   // Set power source to battery, battery percentage and battery voltage
   if(measureBatteryVoltage() > 1) zbMoisture.setPowerSource(ZB_POWER_SOURCE_BATTERY, measureBatteryPercentage(), measureBatteryVoltage());
@@ -180,7 +154,6 @@ void setup() {
 
   // Add endpoint to Zigbee Core
   Zigbee.addEndpoint(&zbMoisture);
-  Zigbee.addEndpoint(&zbColorLight);
 
   // Create a custom Zigbee configuration for End Device with keep alive 10s to avoid interference with reporting data
   esp_zb_cfg_t zigbeeConfig = ZIGBEE_DEFAULT_ED_CONFIG();
@@ -221,7 +194,7 @@ void setup() {
     xTaskCreate(measureAndSleep, "sensor_update", 2048, NULL, 10, NULL);
   }
   else xTaskCreate(measure, "sensor_update", 2048, NULL, 10, NULL);
-  zbColorLight.setLightState(false); 
+}
 
 void loop() {
   // Checking button for factory reset
