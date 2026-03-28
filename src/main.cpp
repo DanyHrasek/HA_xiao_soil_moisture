@@ -69,7 +69,7 @@ static void measureAndSleep(void *arg) {
 
   // measure moisture 5 times and calculate average to get more stable value
   for(uint8_t m = 0; m<5; m++){
-    moisture = moisture + ( ( DRY_VOLTAGE - analogRead(sensorPin) )*100 / ( DRY_VOLTAGE - (WET_VOLTAGE - BATTERY_FACTOR*(100-measureBatteryPercentage()) ) ) );  //s nízkou baterkou napětí ve vodě klesne až na 1350
+    if ( (DRY_VOLTAGE - analogRead(sensorPin)) >= 0 ) moisture = moisture + ( ( DRY_VOLTAGE - analogRead(sensorPin) )*100 / ( DRY_VOLTAGE - (WET_VOLTAGE - BATTERY_FACTOR*(100-measureBatteryPercentage()) ) ) );  //s nízkou baterkou napětí ve vodě klesne až na 1350
   }
   moisture = moisture /5;
   analogWrite(pwmPin, 0);
@@ -112,10 +112,10 @@ static void measure(void *arg) {
   while(true){
     uint moisture = 0;
 
-    for(uint8_t m = 0; m<5; m++){
-      moisture = moisture + ( ( DRY_VOLTAGE - analogRead(sensorPin) )*100 / ( DRY_VOLTAGE - WET_VOLTAGE ) );
+    for(uint8_t m = 0; m<10; m++){
+      if ( (DRY_VOLTAGE - analogRead(sensorPin)) >= 0 ) moisture = moisture + ( ( DRY_VOLTAGE - analogRead(sensorPin) )*100 / ( DRY_VOLTAGE - WET_VOLTAGE ) );
     }
-    moisture = moisture /5;
+    moisture = moisture /10;
 
     zbMoisture.setAnalogInput(moisture);
     
@@ -134,17 +134,37 @@ static void measure(void *arg) {
   }
 }
 
-void setNeopixels() {
+void fadePixel(uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
+  uint8_t r_current = pixels.getPixelColor(n) >> 16 & 0xFF;
+  uint8_t g_current = pixels.getPixelColor(n) >> 8 & 0xFF;
+  uint8_t b_current = pixels.getPixelColor(n) & 0xFF;
+  float brightness = (float)zbColorLight.getLightLevel() / 255.0;
+  float rstep = (r*brightness - r_current) / 10.0;
+  float gstep = (g*brightness - g_current) / 10.0;
+  float bstep = (b*brightness - b_current) / 10.0;
+  for(uint8_t i=0; i<10; i++){
+    pixels.setPixelColor(n, (r_current + rstep*i), (g_current + gstep*i), (b_current + bstep*i));
+    pixels.show();
+  }
+  pixels.setPixelColor(n, r*brightness, g*brightness, b*brightness);
+  pixels.show();
+}
+
+void setNeopixels(void *arg) {
   for(uint8_t i=0; i<PIXELS_NUM; i++){
     if(zbColorLight.getLightState()) {
-      pixels.setPixelColor(i, pixels.Color(zbColorLight.getLightRed(), zbColorLight.getLightGreen(), zbColorLight.getLightBlue()));
-    } else {
-      pixels.setPixelColor(i, pixels.Color(0, 0, 0));
+      fadePixel(i, zbColorLight.getLightRed(), zbColorLight.getLightGreen(), zbColorLight.getLightBlue());
+    } 
+    else {
+      fadePixel(i, 0, 0, 0);
     }
-    delay(100);
+    pixels.show();
   }
-  pixels.setBrightness(zbColorLight.getLightLevel());
-  pixels.show();
+  vTaskDelete(NULL);
+}
+
+void updateLight(bool state, uint8_t red, uint8_t green, uint8_t blue, uint8_t level) {
+  xTaskCreate(setNeopixels, "update_light", 2048, NULL, 11, NULL);
 }
 
 /********************* Arduino functions **************************/
@@ -162,6 +182,7 @@ void setup() {
   pinMode(buttonPin, INPUT);
 
   pixels.begin();
+  pixels.setBrightness(255);
   pixels.show(); // Initialize all pixels to 'off'
 
   // set Zigbee device name and model + add cluster for moisture sensor
@@ -172,7 +193,7 @@ void setup() {
   zbMoisture.setAnalogInputResolution(1);
 
   zbColorLight.setLightColorCapabilities(ZIGBEE_COLOR_CAPABILITY_X_Y);
-  zbColorLight.onLightChangeRgb(setNeopixels);
+  zbColorLight.onLightChangeRgb(updateLight);
 
   // Set power source to battery, battery percentage and battery voltage
   if(measureBatteryVoltage() > 1) zbMoisture.setPowerSource(ZB_POWER_SOURCE_BATTERY, measureBatteryPercentage(), measureBatteryVoltage());
@@ -221,7 +242,8 @@ void setup() {
     xTaskCreate(measureAndSleep, "sensor_update", 2048, NULL, 10, NULL);
   }
   else xTaskCreate(measure, "sensor_update", 2048, NULL, 10, NULL);
-  zbColorLight.setLightState(false); 
+  zbColorLight.setLight(false, 150, 255, 131, 54);
+}
 
 void loop() {
   // Checking button for factory reset
