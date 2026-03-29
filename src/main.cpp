@@ -40,8 +40,14 @@ const uint8_t ledGreenPin = 19;
 const uint8_t ledYellowPin = 18;
 const uint8_t neopixelPin = 17; //D7
 
+TaskHandle_t lightTaskHandle = NULL;
+
 ZigbeeAnalog zbMoisture = ZigbeeAnalog(ENDPOINT_NUMBER);
 ZigbeeColorDimmableLight zbColorLight = ZigbeeColorDimmableLight(ENDPOINT_NUMBER+1);
+ZigbeeBinary zbWave = ZigbeeBinary(ENDPOINT_NUMBER+2);
+ZigbeeBinary zbToggleAnim = ZigbeeBinary(ENDPOINT_NUMBER+3);
+ZigbeeAnalog zbSpeed = ZigbeeAnalog(ENDPOINT_NUMBER+4);
+ZigbeeAnalog zbAmplitude = ZigbeeAnalog(ENDPOINT_NUMBER+5);
 
 Adafruit_NeoPixel pixels = Adafruit_NeoPixel(PIXELS_NUM, neopixelPin, NEO_GRB + NEO_KHZ800);
 
@@ -151,20 +157,57 @@ void fadePixel(uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
 }
 
 void setNeopixels(void *arg) {
-  for(uint8_t i=0; i<PIXELS_NUM; i++){
-    if(zbColorLight.getLightState()) {
+  if(zbToggleAnim.getBinaryOutput()){
+    for(uint8_t i=0; i<PIXELS_NUM; i++){
       fadePixel(i, zbColorLight.getLightRed(), zbColorLight.getLightGreen(), zbColorLight.getLightBlue());
-    } 
-    else {
-      fadePixel(i, 0, 0, 0);
+      pixels.show();
     }
+  }
+  else {
+    pixels.fill(pixels.Color(zbColorLight.getLightRed(), zbColorLight.getLightGreen(), zbColorLight.getLightBlue()));
     pixels.show();
   }
+  while(zbColorLight.getLightState()){
+    if(zbWave.getBinaryOutput()) {
+      float brightness = (float)zbColorLight.getLightLevel() / 255.0;
+      float amplitude = zbAmplitude.getAnalogOutput();
+      for(uint8_t m=0; m<PIXELS_NUM && zbColorLight.getLightState(); m++){
+        for(uint8_t n=0; n<PIXELS_NUM; n++){
+          if(n < PIXELS_NUM/2) {
+            if(m+n < PIXELS_NUM) {
+              pixels.setPixelColor(m+n, zbColorLight.getLightRed()*brightness*(1-(n*amplitude)), zbColorLight.getLightGreen()*brightness*(1-(n*amplitude)), zbColorLight.getLightBlue()*brightness*(1-(n*amplitude)));
+            }
+            else pixels.setPixelColor(m+n-PIXELS_NUM, zbColorLight.getLightRed()*brightness*(1-(n*amplitude)), zbColorLight.getLightGreen()*brightness*(1-(n*amplitude)), zbColorLight.getLightBlue()*brightness*(1-(n*amplitude)));
+          }
+          else {
+            if(m+n < PIXELS_NUM) {
+              pixels.setPixelColor(m+n, zbColorLight.getLightRed()*brightness*(1-((PIXELS_NUM-n)*amplitude)), zbColorLight.getLightGreen()*brightness*(1-((PIXELS_NUM-n)*amplitude)), zbColorLight.getLightBlue()*brightness*(1-((PIXELS_NUM-n)*amplitude)));
+            }
+            else pixels.setPixelColor(m+n-PIXELS_NUM, zbColorLight.getLightRed()*brightness*(1-((PIXELS_NUM-n)*amplitude)), zbColorLight.getLightGreen()*brightness*(1-((PIXELS_NUM-n)*amplitude)), zbColorLight.getLightBlue()*brightness*(1-((PIXELS_NUM-n)*amplitude)));
+          }
+        }
+        pixels.show();
+        vTaskDelay(zbSpeed.getAnalogOutput() / portTICK_PERIOD_MS); // delay based on speed value from zigbee
+      }
+    }
+    else vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+  if(zbToggleAnim.getBinaryOutput()){
+    for(uint8_t i=0; i<PIXELS_NUM; i++){
+      fadePixel(i, 0, 0, 0);
+      pixels.show();
+    }
+  }
+  else {
+    pixels.clear();
+    pixels.show();
+  }
+  lightTaskHandle = NULL;
   vTaskDelete(NULL);
 }
 
-void updateLight(bool state, uint8_t red, uint8_t green, uint8_t blue, uint8_t level) {
-  xTaskCreate(setNeopixels, "update_light", 2048, NULL, 11, NULL);
+void createLight(bool state, uint8_t red, uint8_t green, uint8_t blue, uint8_t level) {
+  if (state && lightTaskHandle == NULL) xTaskCreate(setNeopixels, "update_light", 2048, NULL, 11, &lightTaskHandle);
 }
 
 /********************* Arduino functions **************************/
@@ -193,7 +236,20 @@ void setup() {
   zbMoisture.setAnalogInputResolution(1);
 
   zbColorLight.setLightColorCapabilities(ZIGBEE_COLOR_CAPABILITY_X_Y);
-  zbColorLight.onLightChangeRgb(updateLight);
+  zbColorLight.onLightChangeRgb(createLight);
+
+  zbWave.addBinaryOutput();
+  zbWave.setBinaryOutputDescription("Wave animation");
+  zbToggleAnim.addBinaryOutput();
+  zbToggleAnim.setBinaryOutputDescription("Toggle animation");
+  zbSpeed.addAnalogOutput();
+  zbSpeed.setAnalogOutputDescription("Animation speed");
+  zbSpeed.setAnalogOutputResolution(1);
+  zbSpeed.setAnalogOutputMinMax(1, 100);
+  zbAmplitude.addAnalogOutput();
+  zbAmplitude.setAnalogOutputDescription("Animation amplitude");
+  zbAmplitude.setAnalogOutputResolution(0.01);
+  zbAmplitude.setAnalogOutputMinMax(0.01, 0.10);
 
   // Set power source to battery, battery percentage and battery voltage
   if(measureBatteryVoltage() > 1) zbMoisture.setPowerSource(ZB_POWER_SOURCE_BATTERY, measureBatteryPercentage(), measureBatteryVoltage());
@@ -202,6 +258,10 @@ void setup() {
   // Add endpoint to Zigbee Core
   Zigbee.addEndpoint(&zbMoisture);
   Zigbee.addEndpoint(&zbColorLight);
+  Zigbee.addEndpoint(&zbWave);
+  Zigbee.addEndpoint(&zbToggleAnim);
+  Zigbee.addEndpoint(&zbSpeed);
+  Zigbee.addEndpoint(&zbAmplitude);
 
   // Create a custom Zigbee configuration for End Device with keep alive 10s to avoid interference with reporting data
   esp_zb_cfg_t zigbeeConfig = ZIGBEE_DEFAULT_ED_CONFIG();
@@ -242,7 +302,11 @@ void setup() {
     xTaskCreate(measureAndSleep, "sensor_update", 2048, NULL, 10, NULL);
   }
   else xTaskCreate(measure, "sensor_update", 2048, NULL, 10, NULL);
-  zbColorLight.setLight(false, 150, 255, 131, 54);
+  zbColorLight.setLight(false, 50, 255, 117, 58);
+  zbWave.setBinaryOutput(true);
+  zbToggleAnim.setBinaryOutput(true);
+  zbSpeed.setAnalogOutput(60);
+  zbAmplitude.setAnalogOutput(0.05);
 }
 
 void loop() {
@@ -257,7 +321,7 @@ void loop() {
         // If key pressed for more than 10secs, factory reset Zigbee and reboot
         delay(1000);
         // Optional set reset in factoryReset to false, to not restart device after erasing nvram, but set it to endless sleep manually instead
-        //Zigbee.factoryReset(false);
+        Zigbee.factoryReset(true);
         esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
         esp_deep_sleep_start();
       }
